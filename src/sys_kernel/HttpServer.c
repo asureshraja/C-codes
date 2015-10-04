@@ -87,9 +87,7 @@ for (k = 0; k != num_headers; ++k) {
 // int keepalive=1;
 if (keepalive == 1) {
 
-strcpy(resp,"HTTP/1.1 200 OK\nContent-length: 47\nContent-Type: text/html\n\n<html><body><H1>Hello Kartik</H1></body></html>");
-
-int c=send(events[i].data.fd,&resp,sizeof(resp),MSG_DONTWAIT|MSG_NOSIGNAL);
+int c=send(events[i].data.fd,"HTTP/1.1 200 OK\nContent-length: 46\nContent-Type: text/html\n\n<html><body><H1>Hello World</H1></body></html>",110,MSG_DONTWAIT|MSG_NOSIGNAL);
   //printf("%s\n","going to send" );
 //  send(events[i].data.fd, "HTTP/1.1 200 OK\nContent-length: 46\nContent-Type: text/html\n\n<html><body><H1>Hello world</H1></body></html>", 110,0);
 //  printf("%s\n","sent with keepalive connection" );
@@ -98,9 +96,8 @@ int c=send(events[i].data.fd,&resp,sizeof(resp),MSG_DONTWAIT|MSG_NOSIGNAL);
 
 }else{
 
-strcpy(resp,"HTTP/1.1 200 OK\nContent-length: 47\nContent-Type: text/html\n\n<html><body><H1>Hello Kartik</H1></body></html>");
 
-int c=send(events[i].data.fd,&resp,sizeof(resp),MSG_DONTWAIT|MSG_NOSIGNAL);
+int c=send(events[i].data.fd,"HTTP/1.1 200 OK\nContent-length: 46\nContent-Type: text/html\n\n<html><body><H1>Hello World</H1></body></html>",110,MSG_DONTWAIT|MSG_NOSIGNAL);
 //  printf("%s\n","going to send for non keepalive" );
 //  send(events[i].data.fd, "HTTP/1.1 200 OK\nContent-length: 46\nContent-Type: text/html\n\n<html><body><H1>Hello world</H1></body></html>", 110,0);
 //printf("%s\n","sent for non keepalive" );
