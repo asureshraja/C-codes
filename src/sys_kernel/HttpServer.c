@@ -97,6 +97,7 @@ int c=send(events[i].data.fd,"HTTP/1.1 200 OK\nContent-length: 46\nContent-Type:
 }else{
 
 
+
 int c=send(events[i].data.fd,"HTTP/1.1 200 OK\nContent-length: 46\nContent-Type: text/html\n\n<html><body><H1>Hello World</H1></body></html>",110,MSG_DONTWAIT|MSG_NOSIGNAL);
 //  printf("%s\n","going to send for non keepalive" );
 //  send(events[i].data.fd, "HTTP/1.1 200 OK\nContent-length: 46\nContent-Type: text/html\n\n<html><body><H1>Hello world</H1></body></html>", 110,0);
