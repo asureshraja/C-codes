@@ -12,6 +12,14 @@
 #include "http_parser.h"
 #include <error.h>
 #include <fcntl.h>
+/*
+Experimental c code reading data on http body and sending some text as response
+gcc HttpServer.c http_parser.c -o server -lpthread -w
+TODO
+1. Refactor
+2. Add lock free mpmc queue to support worker threads
+3. to support controllers/handlers and routing api calls
+*/
 int server_socket;
 int epfd;   int  new_socket;
 void network_thread_function(){
