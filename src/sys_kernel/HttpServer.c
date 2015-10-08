@@ -13,19 +13,21 @@
 #include <error.h>
 #include <fcntl.h>
 #include <string.h>
+#include "thread_pool.h"
+#include "server.h"
 /*
 Experimental c code reading data on http body and sending some text as response
-gcc HttpServer.c http_parser.c -o server -lpthread -w
+ gcc -L./ -Wall HttpServer.c http_parser.c -o server -lq -w -lpthread
 TODO
-1. Refactor -Done. over :) its enough.
-2. Add lock free mpmc queue to support worker threads
-3. to support controllers/handlers and routing api calls
+1. Need to remove this threadpool and add someother.
 */
+extern struct worker_args * dequeue();
+extern  void enqueue(struct worker_args *data);
 char* concatenate( char* dest, char* src );
 int str_len(const char *str);
 int server_socket;
 int epfd;   int  new_socket;int worker_epfd;
-
+   void *pool;
 
 
 
@@ -48,6 +50,7 @@ struct http_request{
     char body[512*1024];
     struct phr_header headers[100];
 };
+
 void concatenate_string(char *original, char *add)
 {
    while(*original)
@@ -61,31 +64,33 @@ void concatenate_string(char *original, char *add)
    }
    *original = '\0';
 }
-void send_response(struct http_request *req,char *response_body){
+void send_response(struct http_request *req,char *response,char *response_body){
     //response sending code
+    //printf("%s\n","inside send_response");
+    //printf("%d\n",req->socket_id);
     if (req->keepalive == 1) {
         if(req->minor_version==1)
         {
             //char *response_body="<html><body><H1>Hello World</H1></body></html>";
             char str_length[12];
-            char *response;
             response[0]='\0';
             sprintf(str_length, "%d", str_len(response_body));
             concatenate_string(response,"HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length:");
-            concatenate_string(response,&str_length[0]);
+            concatenate_string(response,str_length);
             concatenate_string(response,"\n\n");
             concatenate_string(response,response_body);
+            // printf("%s\n",response );
             send(req->socket_id,response,str_len(response),MSG_DONTWAIT|MSG_NOSIGNAL);
         }else{
 
             char str_length[12];
-            char *response;
             response[0]='\0';
             sprintf(str_length, "%d", str_len(response_body));
             concatenate_string(response,"HTTP/1.0 200 OK\nConnection: keep-alive\nContent-Type: text/html\nContent-Length:");
             concatenate_string(response,str_length);
             concatenate_string(response,"\n\n");
             concatenate_string(response,response_body);
+            // printf("%s\n",response );
             send(req->socket_id,response,str_len(response),MSG_DONTWAIT|MSG_NOSIGNAL);
         }
 
@@ -94,64 +99,63 @@ void send_response(struct http_request *req,char *response_body){
         if(req->minor_version==1)
         {
             char str_length[12];
-            sprintf(str_length, "%d", str_len(response_body));
-            char *response;
             response[0]='\0';
+            sprintf(str_length, "%d", str_len(response_body));
             concatenate_string(response,"HTTP/1.1 200 OK\nConnection: close\nContent-Type: text/html\nContent-Length:");
             concatenate_string(response,&str_length[0]);
             concatenate_string(response,"\n\n");
             concatenate_string(response,response_body);
+            // printf("%s\n",response );
             send(req->socket_id,response,str_len(response),MSG_DONTWAIT|MSG_NOSIGNAL);
 
         }else{
             char str_length[12];
-            char *response;
             response[0]='\0';
             sprintf(str_length, "%d", str_len(response_body));
             concatenate_string(response,"HTTP/1.0 200 OK\nConnection: close\nContent-Type: text/html\nContent-Length:");
             concatenate_string(response,&str_length[0]);
             concatenate_string(response,"\n\n");
             concatenate_string(response,response_body);
+            // printf("%s\n",response );
             send(req->socket_id,response,str_len(response),MSG_DONTWAIT|MSG_NOSIGNAL);
-
-
         }
-
         close(req->socket_id);
     }
-
-
     free(req);
-
     free(response_body);
 }
-void worker_thread_function(){
-    struct epoll_event *events;
-    int max_events_to_stop_waiting=200;
-    int epoll_time_wait=50;int number_of_ready_events;
-    events = malloc (sizeof (struct epoll_event)*max_events_to_stop_waiting); //epoll event allocation for
-    while(1){
-        number_of_ready_events = epoll_wait (epfd, events, max_events_to_stop_waiting, epoll_time_wait);
+void pool_check(){
+    //while(1){
+        struct worker_args *arg=NULL;
+        if((arg=dequeue())!=NULL){
+            arg->response_body="hello";
+            arg->response_buffer=malloc(sizeof(char)*512*1024);
+            arg->response_buffer[0]='\0';
+            //printf("%s\n",arg->response_body );
+            send_response(arg->req,arg->response_buffer,arg->response_body);
+            free(arg->response_buffer);
+            free(arg);
+        }
 
-    }
+    //}
+
 }
+
 void network_thread_function(){
     int number_of_ready_events;
     struct epoll_event *events;
     int max_events_to_stop_waiting=200;
-    int epoll_time_wait=50;
+    int epoll_time_wait=50;ssize_t received_bytes;
     events = malloc (sizeof (struct epoll_event)*max_events_to_stop_waiting); //epoll event allocation for multiplexing
     int i=0,j=0; //iterators
-    char response_buffer[1024*1024];
-    char *response=response_buffer;
-    response_buffer[0]='\0';
+
     char read_buffer[1024*1024];
     //char body[512*1024];
     char header_key[100],header_value[100];
     int minor_version;
     //struct phr_header headers[100];
     size_t read_buffer_length = 0, method_length, path_length, num_headers;
-    ssize_t received_bytes; char *method, *path;
+    char *method, *path;
     int body_index=0; int headerover=0;
     int header_end=received_bytes-4;
     struct http_request *req;
@@ -162,6 +166,7 @@ void network_thread_function(){
 
             req=malloc(sizeof(struct http_request));
             req->socket_id=events[i].data.fd;
+
             received_bytes=recv(events[i].data.fd, read_buffer ,1024*1024,MSG_DONTWAIT);
 
 
@@ -205,15 +210,24 @@ void network_thread_function(){
 
 
             //response sending code
+            struct worker_args *arg;
+            arg=malloc(sizeof(struct worker_args));
+            arg->req=req;
+            //printf("%d\n",arg->req->keepalive );
+            //arg->response_buffer=response_buffer;
+
             if (req->keepalive != 1){
                 epoll_ctl (epfd, EPOLL_CTL_DEL, events[i].data.fd, &events[i]);
-            }else{
-                epoll_ctl (epfd, EPOLL_CTL_DEL, events[i].data.fd, &events[i]);
-                events[i].events=POLL_OUT;
-                epoll_ctl (worker_epfd, EPOLL_CTL_MOD, events[i].data.fd, &events[i]);
             }
+            enqueue(arg);
+            pool_check();
+            //pool_check(arg);
+            //submit_job(pool, &pool_check, arg);
 
-            send_response(req,"hello");
+            //printf("%d\n",req->keepalive );
+
+            // response_buffer[0]='\0';
+             //send_response(req,&response_buffer[0],"hello");
         }
     }
 }
@@ -246,10 +260,17 @@ int main() {
    struct epoll_event *events;
    events = malloc (sizeof (struct epoll_event)*2);
    int ret,i;
-   pthread_t threads[4];
+   pthread_t threads[4];pthread_t workers[4];
+
    for (i = 0; i < 4; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
+
    }
+   for (i = 0; i < 4; i++) {
+        pthread_create( &workers[i], NULL, &pool_check, NULL);
+
+   }
+
    while (1) {
       if (listen(server_socket, 10000) < 0) {
          perror("server: listen");
