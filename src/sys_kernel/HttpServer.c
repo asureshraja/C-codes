@@ -15,20 +15,63 @@
 #include <string.h>
 #include "thread_pool.h"
 #include "server.h"
+#include <sys/eventfd.h>
 /*
 Experimental c code reading data on http body and sending some text as response
  gcc -L./ -Wall HttpServer.c http_parser.c -o server -lq -w -lpthread
 TODO
-1. Need to remove this threadpool and add someother.
+1. Need to remove this threadpool and add someother its based on eventfd with epoll not working fast because of context switching happening in epoll_wait in work().
 */
 extern struct worker_args * dequeue();
 extern  void enqueue(struct worker_args *data);
+void work();void pool_check();struct worker_args * get_one_from_queue();
+void add_to_queue(struct worker_args *data);
 char* concatenate( char* dest, char* src );
 int str_len(const char *str);
 int server_socket;
 int epfd;   int  new_socket;int worker_epfd;
    void *pool;
+   int epolleventfd, _eventfd;
+    static int addedtoq=0,removedfromq=0;
+struct worker_args * get_one_from_queue(){
+    return dequeue();
+}
+void add_to_queue(struct worker_args *data){
+    addedtoq++;
+    //printf("a%d\n",addedtoq);
+    enqueue(data);
+    eventfd_write(_eventfd, 1);
+}
+void signal_callback_handler(int signum){
+    eventfd_write(_eventfd, 1);
+        //printf("Caught signal SIGPIPE %d\n",signum);
+}
+int init()
+{
+   epolleventfd = epoll_create(10);
+   _eventfd = eventfd(0, EFD_NONBLOCK);
+   struct epoll_event *evnt=malloc(sizeof( struct epoll_event));
+   evnt->data.fd = _eventfd;
+   evnt->events =  EPOLLIN | EPOLLET;
+   epoll_ctl(epolleventfd, EPOLL_CTL_ADD, _eventfd, evnt);
+}
 
+void work()
+{
+    static const int EVENTS = 20;
+    struct epoll_event *events=malloc(sizeof(struct epoll_event)*EVENTS);
+    static int j=0;int i;
+    while (1) {
+        int count = epoll_wait(epolleventfd, events, EVENTS, 10);
+        //printf("%d %d\n",addedtoq,removedfromq);
+        if (count>0 || addedtoq>removedfromq) {
+            eventfd_t val;
+            eventfd_read(_eventfd,&val);
+            pool_check();
+        }
+
+    }
+}
 
 
 char* concatenate( char* dest, char* src )
@@ -68,6 +111,7 @@ void send_response(struct http_request *req,char *response,char *response_body){
     //response sending code
     //printf("%s\n","inside send_response");
     //printf("%d\n",req->socket_id);
+
     if (req->keepalive == 1) {
         if(req->minor_version==1)
         {
@@ -79,7 +123,7 @@ void send_response(struct http_request *req,char *response,char *response_body){
             concatenate_string(response,str_length);
             concatenate_string(response,"\n\n");
             concatenate_string(response,response_body);
-            // printf("%s\n",response );
+            // printf("%s\n",response );//MSG_DONTWAIT|MSG_NOSIGNAL
             send(req->socket_id,response,str_len(response),MSG_DONTWAIT|MSG_NOSIGNAL);
         }else{
 
@@ -90,7 +134,7 @@ void send_response(struct http_request *req,char *response,char *response_body){
             concatenate_string(response,str_length);
             concatenate_string(response,"\n\n");
             concatenate_string(response,response_body);
-            // printf("%s\n",response );
+            //printf("%s\n",response );
             send(req->socket_id,response,str_len(response),MSG_DONTWAIT|MSG_NOSIGNAL);
         }
 
@@ -127,7 +171,7 @@ void send_response(struct http_request *req,char *response,char *response_body){
 void pool_check(){
     //while(1){
         struct worker_args *arg=NULL;
-        if((arg=dequeue())!=NULL){
+        if((arg=get_one_from_queue())!=NULL){
             arg->response_body="hello";
             arg->response_buffer=malloc(sizeof(char)*512*1024);
             arg->response_buffer[0]='\0';
@@ -135,6 +179,7 @@ void pool_check(){
             send_response(arg->req,arg->response_buffer,arg->response_body);
             free(arg->response_buffer);
             free(arg);
+            //printf("g%d\n",removedfromq++);
         }
 
     //}
@@ -219,8 +264,9 @@ void network_thread_function(){
             if (req->keepalive != 1){
                 epoll_ctl (epfd, EPOLL_CTL_DEL, events[i].data.fd, &events[i]);
             }
-            enqueue(arg);
-            pool_check();
+            add_to_queue(arg);
+            //enqueue(arg);
+            //pool_check();
             //pool_check(arg);
             //submit_job(pool, &pool_check, arg);
 
@@ -233,7 +279,7 @@ void network_thread_function(){
 }
 
 int main() {
-
+    init();signal(SIGPIPE, signal_callback_handler);
    socklen_t addrlen,clientaddresslen;
    int bufsize = 1024;
    char *buffer = malloc(bufsize);
@@ -260,14 +306,14 @@ int main() {
    struct epoll_event *events;
    events = malloc (sizeof (struct epoll_event)*2);
    int ret,i;
-   pthread_t threads[4];pthread_t workers[4];
+   pthread_t threads[4];pthread_t workers[8];
 
-   for (i = 0; i < 4; i++) {
+   for (i = 0; i < 1; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
 
    }
-   for (i = 0; i < 4; i++) {
-        pthread_create( &workers[i], NULL, &pool_check, NULL);
+   for (i = 0; i < 1; i++) {
+        pthread_create( &workers[i], NULL, &work, NULL);
 
    }
 
