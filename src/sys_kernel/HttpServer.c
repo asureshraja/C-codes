@@ -13,7 +13,6 @@
 #include <error.h>
 #include <fcntl.h>
 #include <string.h>
-#include "thread_pool.h"
 #include "server.h"
 #include <sys/eventfd.h>
 /*
@@ -25,6 +24,7 @@ TODO
 extern struct worker_args * dequeue();
 extern  void enqueue(struct worker_args *data);
 void work();void pool_check();struct worker_args * get_one_from_queue();
+extern struct worker_args * dequeue_bulk(int count);
 void add_to_queue(struct worker_args *data);
 char* concatenate( char* dest, char* src );
 int str_len(const char *str);
@@ -62,13 +62,16 @@ void work()
     struct epoll_event *events=malloc(sizeof(struct epoll_event)*EVENTS);
     static int j=0;int i;
     while (1) {
-        int count = epoll_wait(epolleventfd, events, EVENTS, 10);
+        int count = epoll_wait(epolleventfd, events, EVENTS, -1);
         //printf("%d %d\n",addedtoq,removedfromq);
-        if (count>0 || addedtoq>removedfromq) {
-            eventfd_t val;
-            eventfd_read(_eventfd,&val);
-            pool_check();
+
+        struct worker_args *arg=NULL;
+        eventfd_t val;
+        eventfd_read(_eventfd,&val);
+        while((arg=get_one_from_queue())!=NULL){
+            pool_check2(arg);
         }
+
 
     }
 }
@@ -90,7 +93,7 @@ struct http_request{
     int socket_id;
     int keepalive;
     int minor_version;
-    char body[512*1024];
+    char body[8*1024];
     struct phr_header headers[100];
 };
 
@@ -171,19 +174,44 @@ void send_response(struct http_request *req,char *response,char *response_body){
 void pool_check(){
     //while(1){
         struct worker_args *arg=NULL;
+        char *temp=malloc(sizeof(char)*8*1024);
         if((arg=get_one_from_queue())!=NULL){
             arg->response_body="hello";
-            arg->response_buffer=malloc(sizeof(char)*512*1024);
+            arg->response_buffer=temp;
             arg->response_buffer[0]='\0';
             //printf("%s\n",arg->response_body );
             send_response(arg->req,arg->response_buffer,arg->response_body);
             free(arg->response_buffer);
-            free(arg);
+            free(arg);free(temp);
+            arg=NULL;
             //printf("g%d\n",removedfromq++);
         }
+        //free(temp);
+        //printf("%s\n","came out" );
 
     //}
 
+}
+
+
+void pool_check2(struct worker_args *arg){
+    char *temp=malloc(sizeof(char)*8*1024);
+    if(arg!=NULL){
+        arg->response_body="hello";
+        arg->response_buffer=temp;
+        arg->response_buffer[0]='\0';
+        //printf("%s\n",arg->response_body );
+        send_response(arg->req,arg->response_buffer,arg->response_body);
+        free(arg->response_buffer);
+        free(arg);free(temp);
+        arg=NULL;
+    }
+
+    //printf("g%d\n",removedfromq++);
+    free(temp);
+        //printf("%s\n","came out" );
+
+    //}
 }
 
 void network_thread_function(){
@@ -193,7 +221,7 @@ void network_thread_function(){
     int epoll_time_wait=50;ssize_t received_bytes;
     events = malloc (sizeof (struct epoll_event)*max_events_to_stop_waiting); //epoll event allocation for multiplexing
     int i=0,j=0; //iterators
-
+    //char *response_buffer=malloc(sizeof(char)*8*1024);
     char read_buffer[1024*1024];
     //char body[512*1024];
     char header_key[100],header_value[100];
@@ -308,7 +336,7 @@ int main() {
    int ret,i;
    pthread_t threads[4];pthread_t workers[8];
 
-   for (i = 0; i < 1; i++) {
+   for (i = 0; i < 4; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
 
    }

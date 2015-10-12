@@ -2,7 +2,8 @@
 #include <string>
 #include "concurrentqueue.h"
 #include <string.h>
-moodycamel::ConcurrentQueue<struct worker_args *> q(1000);
+#include "server.h"
+moodycamel::ConcurrentQueue<struct worker_args *> q(1000000);
 extern "C" void enqueue(struct worker_args *arg){
         while(q.try_enqueue(arg)==false){
             std::cout << "failing in q elem allocation" << std::endl;
