@@ -15,11 +15,13 @@
 #include <string.h>
 #include "server.h"
 #include <sys/eventfd.h>
+#include "thpool.h"
 /*
 Experimental c code reading data on http body and sending some text as response
  gcc -L./ -Wall HttpServer.c http_parser.c -o server -lq -w -lpthread
 TODO
-1. Need to remove this threadpool and add someother its based on eventfd with epoll not working fast because of context switching happening in epoll_wait in work().
+1. replace worker threadpool.
+2. something wrong in passing data to threads causing SIGSEGV
 */
 extern struct worker_args * dequeue();
 extern  void enqueue(struct worker_args *data);
@@ -32,12 +34,12 @@ int server_socket;
 int epfd;   int  new_socket;int worker_epfd;
    void *pool;
    int epolleventfd, _eventfd;
-    static int addedtoq=0,removedfromq=0;
+
 struct worker_args * get_one_from_queue(){
     return dequeue();
 }
 void add_to_queue(struct worker_args *data){
-    addedtoq++;
+
     //printf("a%d\n",addedtoq);
     enqueue(data);
     eventfd_write(_eventfd, 1);
@@ -52,13 +54,13 @@ int init()
    _eventfd = eventfd(0, EFD_NONBLOCK);
    struct epoll_event *evnt=malloc(sizeof( struct epoll_event));
    evnt->data.fd = _eventfd;
-   evnt->events =  EPOLLIN | EPOLLET;
+   evnt->events =  EPOLLIN;
    epoll_ctl(epolleventfd, EPOLL_CTL_ADD, _eventfd, evnt);
 }
 
 void work()
 {
-    static const int EVENTS = 20;
+    static const int EVENTS = 1;
     struct epoll_event *events=malloc(sizeof(struct epoll_event)*EVENTS);
     static int j=0;int i;
     while (1) {
@@ -215,10 +217,10 @@ void pool_check2(struct worker_args *arg){
 }
 
 void network_thread_function(){
-    int number_of_ready_events;
+    int number_of_ready_events;threadpool thpool;thpool = thpool_init(1);
     struct epoll_event *events;
-    int max_events_to_stop_waiting=200;
-    int epoll_time_wait=50;ssize_t received_bytes;
+    int max_events_to_stop_waiting=1;
+    int epoll_time_wait=-1;ssize_t received_bytes;
     events = malloc (sizeof (struct epoll_event)*max_events_to_stop_waiting); //epoll event allocation for multiplexing
     int i=0,j=0; //iterators
     //char *response_buffer=malloc(sizeof(char)*8*1024);
@@ -294,9 +296,9 @@ void network_thread_function(){
             }
             add_to_queue(arg);
             //enqueue(arg);
+            //thpool_add_work(thpool, (void*)pool_check,NULL);
             //pool_check();
-            //pool_check(arg);
-            //submit_job(pool, &pool_check, arg);
+            //pool_check2(arg);
 
             //printf("%d\n",req->keepalive );
 
@@ -334,13 +336,14 @@ int main() {
    struct epoll_event *events;
    events = malloc (sizeof (struct epoll_event)*2);
    int ret,i;
-   pthread_t threads[4];pthread_t workers[8];
+   pthread_t threads[4];
+   pthread_t workers[80];
 
    for (i = 0; i < 4; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
 
    }
-   for (i = 0; i < 1; i++) {
+   for (i = 0; i < 16; i++) {
         pthread_create( &workers[i], NULL, &work, NULL);
 
    }
