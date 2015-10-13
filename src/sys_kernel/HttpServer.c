@@ -20,12 +20,13 @@
 Experimental c code reading data on http body and sending some text as response
  gcc -L./ -Wall HttpServer.c http_parser.c -o server -lq -w -lpthread
 TODO
-1. replace worker threadpool.
-2. something wrong in passing data to threads causing SIGSEGV
+1.something makes second request not working.
 */
 extern struct worker_args * dequeue();
 extern  void enqueue(struct worker_args *data);
 void work();void pool_check();struct worker_args * get_one_from_queue();
+extern struct worker_args * dequeue2();
+extern  void enqueue2(struct worker_args *data);
 extern struct worker_args * dequeue_bulk(int count);
 void add_to_queue(struct worker_args *data);
 char* concatenate( char* dest, char* src );
@@ -50,12 +51,20 @@ void signal_callback_handler(int signum){
 }
 int init()
 {
+       epfd=epoll_create(10000);
    epolleventfd = epoll_create(10);
    _eventfd = eventfd(0, EFD_NONBLOCK);
    struct epoll_event *evnt=malloc(sizeof( struct epoll_event));
    evnt->data.fd = _eventfd;
-   evnt->events =  EPOLLIN;
-   epoll_ctl(epolleventfd, EPOLL_CTL_ADD, _eventfd, evnt);
+   evnt->events =  EPOLLIN | EPOLLET;
+   //epoll_ctl(epolleventfd, EPOLL_CTL_ADD, _eventfd, evnt);
+
+   int ret = epoll_ctl(epfd, EPOLL_CTL_ADD, _eventfd, evnt);
+   if(ret == -1){
+       printf("%s\n","trying to register to ",epfd );
+       perror("epoll ctl add error");
+   }
+
 }
 
 void work()
@@ -198,19 +207,32 @@ void pool_check(){
 
 void pool_check2(struct worker_args *arg){
     char *temp=malloc(sizeof(char)*8*1024);
-    if(arg!=NULL){
+    if((arg=get_one_from_queue())!=NULL){
+        //printf("%s\n","pool check 2" );
         arg->response_body="hello";
         arg->response_buffer=temp;
         arg->response_buffer[0]='\0';
         //printf("%s\n",arg->response_body );
-        send_response(arg->req,arg->response_buffer,arg->response_body);
-        free(arg->response_buffer);
-        free(arg);free(temp);
-        arg=NULL;
+        // send_response(arg->req,arg->response_buffer,arg->response_body);
+        // free(arg->response_buffer);
+        // free(arg);
+        // struct epoll_event *events;
+        // events = malloc (sizeof (struct epoll_event)*3);
+        // events[0].data.fd = _eventfd;
+        // events[0].events = EPOLLIN | EPOLLET;
+        //events[0].data.ptr=arg;
+        // int ret = epoll_ctl (epfd, EPOLL_CTL_MOD, events[0].data.fd, &events[0]);
+        // if (ret==-1) {
+        //     perror ("epoll_ctl");
+        // }
+        //printf("event fd %d\n",_eventfd );
+        enqueue2(arg);
+        eventfd_write(_eventfd,1);
+        //arg=NULL;
     }
 
     //printf("g%d\n",removedfromq++);
-    free(temp);
+    //free(temp);
         //printf("%s\n","came out" );
 
     //}
@@ -236,9 +258,27 @@ void network_thread_function(){
     struct http_request *req;
 
     while(1){
-        number_of_ready_events = epoll_wait (epfd, events, max_events_to_stop_waiting, epoll_time_wait);
+        number_of_ready_events = epoll_wait (epfd, events, 1, -1);
         for (i = 0; i < number_of_ready_events; i++) {
+            //printf("%s\n","inside network thread");
+            //printf("%d\n",events[i].data.fd);
+            if(events[i].data.fd==_eventfd){
+                //epoll_ctl (epfd, EPOLL_CTL_DEL, events[i].data.fd, &events[i]);
+                //printf("%s\n","back to io" );
+                eventfd_t val;
+                eventfd_read(_eventfd,&val);
+                struct worker_args *arg1;
+                if((arg1=dequeue2())!=NULL){
+                    //
+                    // printf("%s\n",arg1->response_body );
+                    // printf("%s\n",arg1->response_buffer );
+                    // printf("%s\n",arg1->req->body );
+                    send_response(arg1->req,arg1->response_buffer,arg1->response_body);
+                    //free(arg1->response_buffer);
+                    free(arg1);
+                }
 
+            }
             req=malloc(sizeof(struct http_request));
             req->socket_id=events[i].data.fd;
 
@@ -294,9 +334,10 @@ void network_thread_function(){
             if (req->keepalive != 1){
                 epoll_ctl (epfd, EPOLL_CTL_DEL, events[i].data.fd, &events[i]);
             }
-            add_to_queue(arg);
-            //enqueue(arg);
-            //thpool_add_work(thpool, (void*)pool_check,NULL);
+            //add_to_queue(arg);
+            enqueue(arg);
+            //printf("%s\n", "enqueued args");
+            thpool_add_work(thpool, (void*)pool_check2,NULL);
             //pool_check();
             //pool_check2(arg);
 
@@ -331,10 +372,11 @@ int main() {
    int optval = 1;
    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR|SO_LINGER, &optval, sizeof(optval));
 
-   epfd=epoll_create(10000);
+
    worker_epfd=epoll_create(10000);
    struct epoll_event *events;
-   events = malloc (sizeof (struct epoll_event)*2);
+   events = malloc (sizeof (struct epoll_event)*3);
+
    int ret,i;
    pthread_t threads[4];
    pthread_t workers[80];
@@ -343,10 +385,10 @@ int main() {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
 
    }
-   for (i = 0; i < 16; i++) {
-        pthread_create( &workers[i], NULL, &work, NULL);
-
-   }
+   // for (i = 0; i < 16; i++) {
+   //      pthread_create( &workers[i], NULL, &work, NULL);
+   //
+   // }
 
    while (1) {
       if (listen(server_socket, 10000) < 0) {
