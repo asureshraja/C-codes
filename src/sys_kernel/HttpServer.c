@@ -39,7 +39,7 @@ extern struct worker_args * dequeue2();
 extern  void enqueue2(struct worker_args *data);
 extern struct worker_args * dequeue();
 extern  void enqueue(struct worker_args *data);
-
+threadpool thpool;
 
 char* concatenate( char* dest, char* src )
 {
@@ -135,6 +135,7 @@ void send_response(struct http_request *req,char *response,char *response_body){
 }
 
 void work(struct worker_args *args){
+        stick_this_thread_to_core(-1);
     char *response_buffer=malloc(sizeof(char)*2048*4);
     response_buffer[0]='\0';
     args->response_buffer=response_buffer;//remaining will be filled by send
@@ -159,7 +160,7 @@ int stick_this_thread_to_core(int core_id) {
 void network_thread_function(){
     static int core_id=-1;
     //core_id=core_id+1;
-    stick_this_thread_to_core(core_id%2);
+    stick_this_thread_to_core(core_id);
     int number_of_ready_events;
     struct epoll_event *events;
     int max_events_to_stop_waiting=1;
@@ -176,8 +177,8 @@ void network_thread_function(){
     ssize_t received_bytes; char *method, *path;
     int body_index=0; int headerover=0;
     int header_end=received_bytes-4;
-    struct http_request *req;threadpool thpool;
-    thpool = thpool_init(2);struct worker_args *arg=NULL;
+    struct http_request *req;
+    struct worker_args *arg=NULL;
     while(1){
         number_of_ready_events = epoll_wait (epfd, events, max_events_to_stop_waiting, epoll_time_wait);
         if (number_of_ready_events==0) {
@@ -310,8 +311,9 @@ int main() {
    evnt.events = EPOLLIN | EPOLLET;
    epoll_ctl(epfd, EPOLL_CTL_ADD, _eventfd, &evnt);
 
-   pthread_t threads[3];
-   for (i = 0; i < 3; i++) {
+   thpool = thpool_init(2);
+   pthread_t threads[4];
+   for (i = 0; i < 4; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
    }
    while (1) {
@@ -319,7 +321,7 @@ int main() {
          perror("server: listen");
          //exit(1);
       }
-
+clientaddresslen=sizeof(clientaddress);
       if ((new_socket = accept4(server_socket, (struct sockaddr *) &clientaddress, &clientaddresslen,SOCK_NONBLOCK)) < 0) {
          perror("server: accept");
          //exit(1);
