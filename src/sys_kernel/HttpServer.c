@@ -1,3 +1,7 @@
+#ifndef __USE_GNU
+#define __USE_GNU
+#endif
+#define _GNU_SOURCE
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +20,9 @@
 #include "thpool.h"
 #include <string.h>
 #include <sys/eventfd.h>
+#include <unistd.h>
+#include <sched.h>
+
 /*
 Experimental c code reading data on http body and sending some text as response
 gcc HttpServer.c http_parser.c -o server -lpthread -w
@@ -50,7 +57,7 @@ struct http_request{
     int socket_id;
     int keepalive;
     int minor_version;
-    char body[512*1024];
+    char body[512*512];
     struct phr_header headers[100];
 };
 void concatenate_string(char *original, char *add)
@@ -137,8 +144,22 @@ void work(struct worker_args *args){
     //printf("%s\n","written" );
     //send_response(args->req, args->response_buffer, args->response_body);
 }
+int stick_this_thread_to_core(int core_id) {
+   int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+   if (core_id < 0 || core_id >= num_cores)
+      return -1;
+   cpu_set_t cpuset;
+   CPU_ZERO(&cpuset);
+   CPU_SET(core_id, &cpuset);
+
+   pthread_t current_thread = pthread_self();
+   return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+}
 
 void network_thread_function(){
+    static int core_id=-1;
+    //core_id=core_id+1;
+    stick_this_thread_to_core(core_id%2);
     int number_of_ready_events;
     struct epoll_event *events;
     int max_events_to_stop_waiting=1;
@@ -156,11 +177,11 @@ void network_thread_function(){
     int body_index=0; int headerover=0;
     int header_end=received_bytes-4;
     struct http_request *req;threadpool thpool;
-    thpool = thpool_init(8);struct worker_args *arg=NULL;
+    thpool = thpool_init(2);struct worker_args *arg=NULL;
     while(1){
         number_of_ready_events = epoll_wait (epfd, events, max_events_to_stop_waiting, epoll_time_wait);
         if (number_of_ready_events==0) {
-            while ((arg=dequeue())!=NULL) {
+            if ((arg=dequeue())!=NULL) {
                    send_response(arg->req, arg->response_buffer, arg->response_body);
                    free(arg);
                    arg=NULL;
@@ -168,11 +189,6 @@ void network_thread_function(){
             continue;
         }
         for (i = 0; i < number_of_ready_events; i++) {
-            if ((arg=dequeue())!=NULL) {
-                   send_response(arg->req, arg->response_buffer, arg->response_body);
-                   free(arg);
-                   arg=NULL;
-            }
             //printf("%s\n","network thread" );
             //printf("i val %d\n", i);
             //printf("%d\n", events[i].data.fd);
@@ -181,7 +197,7 @@ void network_thread_function(){
             //    printf("%s\n","io loop" );
                 eventfd_t val;
                 eventfd_read(_eventfd, &val);
-                if ((arg=dequeue())!=NULL) {
+                while ((arg=dequeue())!=NULL) {
                        send_response(arg->req, arg->response_buffer, arg->response_body);
                        free(arg);
                        arg=NULL;
@@ -294,8 +310,8 @@ int main() {
    evnt.events = EPOLLIN | EPOLLET;
    epoll_ctl(epfd, EPOLL_CTL_ADD, _eventfd, &evnt);
 
-   pthread_t threads[4];
-   for (i = 0; i < 4; i++) {
+   pthread_t threads[3];
+   for (i = 0; i < 3; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
    }
    while (1) {
