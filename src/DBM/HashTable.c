@@ -38,8 +38,11 @@ char* create_mmap_for_new_file(int fd,int initial_page_size){
     write(fd,"-", 1);//writing as last char
     data = mmap((caddr_t)0, initial_page_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
     0);
-    if (data == MAP_FAILED)
-            handle_error("mmap");
+    if (data == MAP_FAILED) {
+	close(fd);
+	perror("Error mmapping the file");
+	exit(EXIT_FAILURE);
+    }
     return data;
 }
 char* create_mmap(int fd,int offset,int page_size){
@@ -71,11 +74,19 @@ void delete_mmap(char *data,int mapped_size){
 
 int main(){
     char *data=NULL;
-    int fd=open_file("/home/suresh/Desktop/test.db");
-    //create_mmap_for_new_file(create_file("/home/suresh/Desktop/test.db"),getpagesize());
-    data=create_mmap(fd,0,10000);
-
-    //data="hello";
-    printf("%c\n",data[0]);
+    // first time code
+    int fd=create_file("/home/suresh/Desktop/test.db");
+    data=create_mmap_for_new_file(fd,getpagesize());
     delete_mmap(data, getpagesize());
+    close(fd);
+    // end of first time code
+
+    //mapping existing file code
+    int fd=open_file("/home/suresh/Desktop/test.db");
+    data=create_mmap(fd,0,getpagesize());
+    delete_mmap(data, getpagesize());
+    close(fd);
+    //mapping existing file code end
+    printf("%c\n",data[0]);
+
 }
