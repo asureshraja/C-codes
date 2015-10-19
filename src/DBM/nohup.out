@@ -1,0 +1,10 @@
+[ 231162]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN No appenders could be found for logger (org.apache.maven.wagon.providers.http.httpclient.client.protocol.RequestAddCookies). 
+[ 231162]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN Please initialize the log4j system properly. 
+[ 231162]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN See http://logging.apache.org/log4j/1.2/faq.html#noconfig for more info. 
+[3807143]   WARN - api.vfs.impl.local.FileWatcher - Watcher terminated with exit code 0 
+[ 320773]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN No appenders could be found for logger (org.apache.maven.wagon.providers.http.httpclient.client.protocol.RequestAddCookies). 
+[ 320774]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN Please initialize the log4j system properly. 
+[ 320774]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN See http://logging.apache.org/log4j/1.2/faq.html#noconfig for more info. 
+[ 320774]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN No appenders could be found for logger (org.apache.maven.wagon.providers.http.httpclient.client.protocol.RequestAddCookies). 
+[ 320774]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN Please initialize the log4j system properly. 
+[ 320774]   WARN - ution.rmi.RemoteProcessSupport - log4j:WARN See http://logging.apache.org/log4j/1.2/faq.html#noconfig for more info. 
