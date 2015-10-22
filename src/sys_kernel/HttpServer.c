@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #include <netinet/in.h>
 #include <stdio.h>
+#include <netinet/tcp.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -289,7 +290,9 @@ int main() {
    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) > 0){
       printf("The socket was created\n");
    }
-
+   int ii=1;
+   setsockopt( server_socket, IPPROTO_TCP, TCP_NODELAY, (void *)&ii, sizeof(ii));
+   setsockopt( server_socket, IPPROTO_TCP, TCP_QUICKACK, (void *)&ii, sizeof(ii));
    address.sin_family = AF_INET;
    address.sin_addr.s_addr = INADDR_ANY;
    address.sin_port = htons(5000);
@@ -300,7 +303,7 @@ int main() {
    int optval = 1;
    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR|SO_LINGER, &optval, sizeof(optval));
 
-   epfd=epoll_create(10000);
+   epfd=epoll_create(1000000-1);
    struct epoll_event *events;
    events = malloc (sizeof (struct epoll_event)*2);
    int ret,i;
@@ -328,6 +331,8 @@ clientaddresslen=sizeof(clientaddress);
       }
 
       if (new_socket > 0){
+          setsockopt( new_socket, IPPROTO_TCP, TCP_NODELAY, (void *)&ii, sizeof(ii));
+          setsockopt( new_socket, IPPROTO_TCP, TCP_QUICKACK, (void *)&ii, sizeof(ii));
         events[0].data.fd = new_socket;
         events[0].events = EPOLLIN | EPOLLET;
         ret = epoll_ctl (epfd, EPOLL_CTL_ADD, events[0].data.fd, &events[0]);
