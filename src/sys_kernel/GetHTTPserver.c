@@ -139,10 +139,10 @@ void work(struct worker_args *args){
     response_buffer[0]='\0';
     args->response_buffer=response_buffer;//remaining will be filled by send
     args->response_body="hello";
-    enqueue(args);
+    //enqueue(args);
     //eventfd_write(_eventfd, 1);
     //printf("%s\n","written" );
-    //send_response(args->req, args->response_buffer, args->response_body);
+    send_response(args->req, args->response_buffer, args->response_body);
 }
 int stick_this_thread_to_core(int core_id) {
    int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
@@ -162,8 +162,8 @@ void network_thread_function(){
     stick_this_thread_to_core(core_id);
     int number_of_ready_events;
     struct epoll_event *events;
-    int max_events_to_stop_waiting=1;
-    int epoll_time_wait=0;
+    int max_events_to_stop_waiting=50;
+    int epoll_time_wait=25;
     events = malloc (sizeof (struct epoll_event)*max_events_to_stop_waiting); //epoll event allocation for multiplexing
     int i=0,j=0; //iterators
     //char *response_buffer;
@@ -180,30 +180,13 @@ void network_thread_function(){
     struct worker_args *arg=NULL;
     while(1){
         number_of_ready_events = epoll_wait (epfd, events, max_events_to_stop_waiting, epoll_time_wait);
-        if (number_of_ready_events==0) {
-            if ((arg=dequeue())!=NULL) {
-                   send_response(arg->req, arg->response_buffer, arg->response_body);
-                   free(arg);
-                   arg=NULL;
-            }
-            continue;
-        }
+
         for (i = 0; i < number_of_ready_events; i++) {
             //printf("%s\n","network thread" );
             //printf("i val %d\n", i);
             //printf("%d\n", events[i].data.fd);
 
-            if (events[i].data.fd==_eventfd) {
-            //    printf("%s\n","io loop" );
-                eventfd_t val;
-                eventfd_read(_eventfd, &val);
-                while ((arg=dequeue())!=NULL) {
-                       send_response(arg->req, arg->response_buffer, arg->response_body);
-                       free(arg);
-                       arg=NULL;
-                }
-                continue;
-            }
+
 
             //read_buffer=malloc(sizeof(char)*512*512);
             //memset(read_buffer, '\0', 512*512);
@@ -260,13 +243,9 @@ void network_thread_function(){
 
             struct worker_args *args=malloc(sizeof(struct worker_args));
             args->req=req;
-            thpool_add_work(thpool, (void*)work,args);
-            //work(args);
-            if ((arg=dequeue())!=NULL) {
-                   send_response(arg->req, arg->response_buffer, arg->response_body);
-                   free(arg);
-                   arg=NULL;
-            }
+            work(args);
+            //send_response(arg->req, arg->response_buffer, arg->response_body);
+
 
 
         }
@@ -301,7 +280,7 @@ int main() {
    int optval = 1;
    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR|SO_LINGER, &optval, sizeof(optval));
 
-   epfd=epoll_create(1000000-1);
+   epfd=epoll_create(1000-1);
    struct epoll_event *events;
    events = malloc (sizeof (struct epoll_event)*2);
    int ret,i;
@@ -312,9 +291,9 @@ int main() {
    evnt.events = EPOLLIN | EPOLLET;
    epoll_ctl(epfd, EPOLL_CTL_ADD, _eventfd, &evnt);
 
-   thpool = thpool_init(2);
-   pthread_t threads[4];
-   for (i = 0; i < 4; i++) {
+   //thpool = thpool_init(2);
+   pthread_t threads[2];
+   for (i = 0; i < 2; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
    }
    while (1) {
