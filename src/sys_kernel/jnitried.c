@@ -23,13 +23,16 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <sched.h>
-
+#include <jni.h>
 /*
 Experimental c server code
+
 g++ -std=c++11 -c -fPIC -Wall queueapi.cpp  -o queueapi.o
 g++ -shared -o libq.so queueapi.o
 gcc -L./ -Wall HttpServer.c http_parser.c thpool.c -o server -lq -w -lpthread -g
+
 */
+JNIEnv* create_vm(JavaVM **jvm);
 char* concatenate( char* dest, char* src );
 int str_len(const char *str);
 int server_socket;int _eventfd;
@@ -39,6 +42,9 @@ extern  void enqueue2(struct worker_args *data);
 extern struct worker_args * dequeue();
 extern  void enqueue(struct worker_args *data);
 threadpool thpool;
+JavaVM *jvm;
+
+
 
 char* concatenate( char* dest, char* src )
 {
@@ -56,8 +62,11 @@ struct http_request{
     int socket_id;
     int keepalive;
     int minor_version;
-    char body[512*512];
+    char body[128*128];
+    int body_len;
+    int num_headers;
     struct phr_header headers[100];
+
 };
 void concatenate_string(char *original, char *add)
 {
@@ -120,8 +129,6 @@ void send_response(struct http_request *req,char *response,char *response_body){
             concatenate_string(response,"\n\n");
             concatenate_string(response,response_body);
             send(req->socket_id,response,str_len(response),MSG_DONTWAIT|MSG_NOSIGNAL);
-
-
         }
 
         close(req->socket_id);
@@ -132,18 +139,116 @@ void send_response(struct http_request *req,char *response,char *response_body){
     free(response);
     free(response_body);
 }
+void initialize_jvm(){
 
+}
 void work(struct worker_args *args){
-        stick_this_thread_to_core(-1);
+    static int a=0;int status;
+    JNIEnv *env;
+    int isAttached = 0;
+    stick_this_thread_to_core(-1);
     char *response_buffer=malloc(sizeof(char)*2048*4);
     response_buffer[0]='\0';
     args->response_buffer=response_buffer;//remaining will be filled by send
-    args->response_body="hello";
+    /////jni
+
+
+
+    if ((status = (*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6)) < 0) {
+
+           if ((status = (*jvm)->AttachCurrentThread(jvm, &env, NULL)) < 0) {
+               return;
+           }
+           isAttached = 1;
+       }
+
+
+       jclass handler_class;jclass request_class;jclass response_class;
+       jmethodID handler_constructor;jmethodID request_constructor;jmethodID response_constructor;
+       jobject handler_object;
+       jmethodID first_method;jmethodID set_request_body_method;jmethodID get_response_body_method;
+
+       handler_class = (*env)->FindClass(env, "Handler");
+
+       request_class = (*env)->FindClass(env, "Request");
+
+       response_class = (*env)->FindClass(env, "Response");
+
+       handler_constructor = (*env)->GetMethodID(env,handler_class, "<init>", "()V");
+       request_constructor = (*env)->GetMethodID(env,request_class, "<init>", "()V");
+       response_constructor = (*env)->GetMethodID(env,response_class, "<init>", "()V");
+       handler_object =  (*env)->NewObject(env,handler_class,handler_constructor);
+       first_method = (*env)->GetStaticMethodID(env, handler_class, "first", "(LRequest;LResponse;)I");
+       set_request_body_method = (*env)->GetStaticMethodID(env, request_class, "setRequestBody", "(Ljava/lang/String;)I");
+       get_response_body_method = (*env)->GetStaticMethodID(env, response_class, "getResponseBody", "()Ljava/lang/String;");
+    jobject request_object =  (*env)->NewObject(env,request_class,request_constructor);
+    jobject response_object =  (*env)->NewObject(env,response_class,response_constructor);
+
+
+    jstring sample=(*env)->NewStringUTF(env,"args->req->body");//setting request body
+    (*env)->CallStaticIntMethod(env, set_request_body_method,sample);
+    (*env)->CallStaticIntMethod(env, first_method,request_object,response_object);
+    jstring s=(jstring)(*env)->CallStaticObjectMethod(env, get_response_body_method,response_object);
+
+    // char *str=(*env)->GetStringUTFChars(env,s,0); //store from java method through jni
+
+    args->response_body=malloc(sizeof(char));
+    jint strlen = (*env)->GetStringUTFLength(env,s);
+
+    (*env)->GetStringUTFRegion(env,s, 0, strlen, args->response_body);
+    //important code
+    //args->response_body="hello";
+    //sprintf(args->response_body,"%s",str);
+    //args->response_body= str; //store from java method through jni
+    //end of important code
+    //printf("args %s\n",args->response_body);
+    //(*env)->ReleaseStringUTFChars(env,s, str);
+
+    //(*env)->DeleteLocalRef(env,strlen);
+    (*env)->DeleteLocalRef(env,s);
+
+    (*env)->DeleteLocalRef(env,request_object);(*env)->DeleteLocalRef(env,response_object);
+    (*env)->DeleteLocalRef(env,handler_object);
+    (*env)->DeleteLocalRef(env,set_request_body_method);
+    (*env)->DeleteLocalRef(env,first_method);
+    (*env)->DeleteLocalRef(env,get_response_body_method);
+    (*env)->DeleteLocalRef(env,handler_class);
+    (*env)->DeleteLocalRef(env,request_class);
+    (*env)->DeleteLocalRef(env,response_class);
+
+    //free(request_object);
+    //free(response_object);
+    /////end of jni
+
     enqueue(args);
+
     //eventfd_write(_eventfd, 1);
     //printf("%s\n","written" );
     //send_response(args->req, args->response_buffer, args->response_body);
 }
+
+JNIEnv* create_vm(JavaVM **jvm)
+{
+    JNIEnv* env;
+    JavaVMInitArgs args;
+    JavaVMOption options[3];
+    args.version = JNI_VERSION_1_6;
+    args.nOptions = 1;
+    options[0].optionString = "-Djava.class.path=./";
+    options[1].optionString = "-Xms1024m";
+    options[2].optionString = "-Xmx5000m";
+    args.options = options;
+    args.ignoreUnrecognized = 0;
+    int rv;
+    rv = JNI_CreateJavaVM(jvm, (void**)&env, &args);
+
+    if (rv < 0 || !env)
+        printf("Unable to Launch JVM %d\n",rv);
+    else
+        printf("Launched JVM! :)\n");
+    return env;
+}
+
 int stick_this_thread_to_core(int core_id) {
    int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
    if (core_id < 0 || core_id >= num_cores)
@@ -183,6 +288,9 @@ void network_thread_function(){
         if (number_of_ready_events==0) {
             if ((arg=dequeue())!=NULL) {
                    send_response(arg->req, arg->response_buffer, arg->response_body);
+                   free(arg->req);
+                   free(arg->response_body);
+                   free(arg->response_buffer);
                    free(arg);
                    arg=NULL;
             }
@@ -199,6 +307,9 @@ void network_thread_function(){
                 eventfd_read(_eventfd, &val);
                 while ((arg=dequeue())!=NULL) {
                        send_response(arg->req, arg->response_buffer, arg->response_body);
+                       free(arg->req);
+                       free(arg->response_body);
+                       free(arg->response_buffer);
                        free(arg);
                        arg=NULL;
                 }
@@ -226,12 +337,14 @@ void network_thread_function(){
                     req->body[body_index++]=read_buffer[j];
                 }
             }
+            req->body_len=body_index;
             //end of splitting header and body. now body holds full data payload in http request.
 
 
             //parsing headers
             num_headers = sizeof(req->headers) / sizeof(req->headers[0]);
             phr_parse_request(read_buffer, received_bytes, &method, &method_length, &path, &path_length,&req->minor_version, req->headers, &num_headers, 0);
+            req->num_headers=num_headers;
             //end of parsing headers
 
 
@@ -260,24 +373,26 @@ void network_thread_function(){
 
             struct worker_args *args=malloc(sizeof(struct worker_args));
             args->req=req;
-            thpool_add_work(thpool, (void*)work,args);
+            args->response_body="hello";
+            enqueue(args);
+            //thpool_add_work(thpool, (void*)work,args);
             //work(args);
             if ((arg=dequeue())!=NULL) {
                    send_response(arg->req, arg->response_buffer, arg->response_body);
+                   free(arg->req);
+                   free(arg->response_body);
+                   free(arg->response_buffer);
                    free(arg);
                    arg=NULL;
             }
-
-
         }
-
-
     }
 }
 
 int main() {
 
-
+    create_vm(&jvm);
+    //initialize_jvm();
    socklen_t addrlen,clientaddresslen;
    int bufsize = 1024;
    char *buffer = malloc(bufsize);
@@ -312,7 +427,7 @@ int main() {
    evnt.events = EPOLLIN | EPOLLET;
    epoll_ctl(epfd, EPOLL_CTL_ADD, _eventfd, &evnt);
 
-   thpool = thpool_init(2);
+  // thpool = thpool_init(1);
    pthread_t threads[4];
    for (i = 0; i < 4; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
