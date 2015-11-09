@@ -23,16 +23,18 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <sched.h>
+#include <string.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <librdkafka/rdkafka.h>
-/*
 /*
 Experimental c server code
 g++ -std=c++11 -c -fPIC -Wall queueapi.cpp  -o queueapi.o
 g++ -shared -o libq.so queueapi.o
 gcc -L./ -Wall HttpServer.c http_parser.c thpool.c -o server -lq -w -lpthread -g
 */
+
 char* concatenate( char* dest, char* src );
 int str_len(const char *str);
 int server_socket;int _eventfd;
@@ -41,9 +43,8 @@ extern struct worker_args * dequeue2();
 extern  void enqueue2(struct worker_args *data);
 extern struct worker_args * dequeue();
 extern  void enqueue(struct worker_args *data);
-threadpool thpool;
 void handle_signal(int signal);
-int kafka_produce(char *buf);
+int kafka_produce(char *kafka_buffer);
 threadpool thpool;
 
 char errstr[512];
@@ -59,17 +60,17 @@ rd_kafka_t *rk;
 void handle_signal(int signal) {
     if(signal==SIGTERM || signal==SIGINT){
         printf("%s\n","please wait.." );
-        close(server_socket);
 		while (rd_kafka_outq_len(rk) > 0){
             printf("%s %d","remaining ",rd_kafka_outq_len(rk));
             rd_kafka_poll(rk, 0);
         }
+        //close(server_socket);
     }
 }
 
 int kafka_produce(char *kafka_buffer){
     while (rd_kafka_produce(rkt, RD_KAFKA_PARTITION_UA,
-					     RD_KAFKA_MSG_F_COPY,
+					     RD_KAFKA_MSG_F_FREE,
 					     /* Payload and length */
 					     kafka_buffer, str_len(kafka_buffer),
 					     /* Optional key and its length */
@@ -78,20 +79,25 @@ int kafka_produce(char *kafka_buffer){
 					      * delivery report callback as
 					      * msg_opaque. */
 					     NULL) == -1) {
-		//		printf("%s\n","error" );
-                //return -1;
+				// printf("%s\n","error" );
+                // free(kafka_buffer);
 
 	}
+    //free(kafka_buffer);
         return 1;
 
 }
 void kafka_init(){
     conf = rd_kafka_conf_new();
     topic_conf = rd_kafka_topic_conf_new();
+    rd_kafka_conf_set(conf, "queue.buffering.max.ms", "10",
+              NULL, 0);
+    rd_kafka_conf_set(conf, "queue.buffering.max.messages", "5000000",
+                        NULL, 0);
+    rd_kafka_conf_set(conf, "queued.min.messages", "1000000", NULL, 0);
 
     if (signal(SIGTERM, handle_signal) == SIG_ERR)
     printf("\ncan't catch SIGINT\n");
-
 
     if (!(rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf,
 					errstr, sizeof(errstr)))) {
@@ -109,13 +115,6 @@ void kafka_init(){
 
     /* Create topic */
     rkt = rd_kafka_topic_new(rk, topic, topic_conf);
-
-
-    rd_kafka_conf_set(conf, "queue.buffering.max.messages", "50000000",
-			  NULL, 0);
-	rd_kafka_conf_set(conf, "message.send.max.retries", "3", NULL, 0);
-	rd_kafka_conf_set(conf, "retry.backoff.ms", "50", NULL, 0);
-
 }
 char* concatenate( char* dest, char* src )
 {
@@ -133,7 +132,7 @@ struct http_request{
     int socket_id;
     int keepalive;
     int minor_version;
-    char body[512*512];
+    char* body;
     struct phr_header headers[100];
 };
 void concatenate_string(char *original, char *add)
@@ -149,7 +148,10 @@ void concatenate_string(char *original, char *add)
    }
    *original = '\0';
 }
-void send_response(struct http_request *req,char *response,char *response_body){
+void send_response(struct worker_args *args){
+    struct http_request *req=args->req;
+    char *response=args->response_buffer;
+    char *response_body=args->response_body;
     //response sending code
     if (req->keepalive == 1) {
         if(req->minor_version==1)
@@ -198,28 +200,35 @@ void send_response(struct http_request *req,char *response,char *response_body){
             concatenate_string(response,response_body);
             send(req->socket_id,response,str_len(response),MSG_DONTWAIT|MSG_NOSIGNAL);
 
-
         }
 
         close(req->socket_id);
     }
 
-
+    free(args);
     free(req);
+    free(req->body);
     free(response);
     free(response_body);
 }
 
 void work(struct worker_args *args){
-        stick_this_thread_to_core(-1);
-    char *response_buffer=malloc(sizeof(char)*2048*4);
+
+    char *response_buffer=malloc(sizeof(char)*2048*2);
     response_buffer[0]='\0';
     args->response_buffer=response_buffer;//remaining will be filled by send
-    args->response_body="ok";
-    enqueue(args);
-    //eventfd_write(_eventfd, 1);
-    //printf("%s\n","written" );
-    //send_response(args->req, args->response_buffer, args->response_body);
+    char *tmp=malloc(5);
+    strcpy(tmp,"ok");
+    args->response_body=tmp;
+    //uncomment to enable kafka push
+    char *data=malloc(7);
+    strcpy(data,"kafka");
+    // char *data=malloc(str_len(args->req->body));
+    // strcpy(data,args->req->body);
+
+    kafka_produce(data);
+
+    send_response(args);
 }
 int stick_this_thread_to_core(int core_id) {
    int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
@@ -235,16 +244,16 @@ int stick_this_thread_to_core(int core_id) {
 
 void network_thread_function(){
     static int core_id=-1;
-    //core_id=core_id+1;
-    stick_this_thread_to_core(core_id);
+    core_id=core_id+1;
+    stick_this_thread_to_core(core_id%4);
     int number_of_ready_events;
     struct epoll_event *events;
-    int max_events_to_stop_waiting=1;
-    int epoll_time_wait=0;
+    int max_events_to_stop_waiting=10;
+    int epoll_time_wait=50;
     events = malloc (sizeof (struct epoll_event)*max_events_to_stop_waiting); //epoll event allocation for multiplexing
     int i=0,j=0; //iterators
     //char *response_buffer;
-    char read_buffer[512*512];
+    char read_buffer[51*51];
     //char body[512*1024];
     char header_key[100],header_value[100];
     int minor_version;
@@ -257,37 +266,14 @@ void network_thread_function(){
     struct worker_args *arg=NULL;
     while(1){
         number_of_ready_events = epoll_wait (epfd, events, max_events_to_stop_waiting, epoll_time_wait);
-        if (number_of_ready_events==0) {
-            if ((arg=dequeue())!=NULL) {
-                   send_response(arg->req, arg->response_buffer, arg->response_body);
-                   free(arg);
-                   arg=NULL;
-            }
-            continue;
-        }
+
         for (i = 0; i < number_of_ready_events; i++) {
-            //printf("%s\n","network thread" );
-            //printf("i val %d\n", i);
-            //printf("%d\n", events[i].data.fd);
 
-            if (events[i].data.fd==_eventfd) {
-            //    printf("%s\n","io loop" );
-                eventfd_t val;
-                eventfd_read(_eventfd, &val);
-                while ((arg=dequeue())!=NULL) {
-                       send_response(arg->req, arg->response_buffer, arg->response_body);
-                       free(arg);
-                       arg=NULL;
-                }
-                continue;
-            }
-
-            //read_buffer=malloc(sizeof(char)*512*512);
-            //memset(read_buffer, '\0', 512*512);
             req=malloc(sizeof(struct http_request));
+            req->body=malloc(sizeof(char)*51*51);
             req->socket_id=events[i].data.fd;
             read_buffer[0]='\0';
-            received_bytes=recv(events[i].data.fd, read_buffer ,512*512,MSG_DONTWAIT);
+            received_bytes=recv(events[i].data.fd, read_buffer ,51*51,MSG_DONTWAIT);
             read_buffer[received_bytes]='\0';
 
             //splitting header and body;
@@ -305,12 +291,10 @@ void network_thread_function(){
             }
             //end of splitting header and body. now body holds full data payload in http request.
 
-
             //parsing headers
             num_headers = sizeof(req->headers) / sizeof(req->headers[0]);
             phr_parse_request(read_buffer, received_bytes, &method, &method_length, &path, &path_length,&req->minor_version, req->headers, &num_headers, 0);
             //end of parsing headers
-
 
             // getting keepalive or not
             //int keepalive=0; // 1 indicates keepalive connection
@@ -328,8 +312,6 @@ void network_thread_function(){
             }
             // found type of connection keepalive or not
 
-
-
             //response sending code
             if (req->keepalive != 1){
                 epoll_ctl (epfd, EPOLL_CTL_DEL, events[i].data.fd, &events[i]);
@@ -337,30 +319,21 @@ void network_thread_function(){
 
             struct worker_args *args=malloc(sizeof(struct worker_args));
             args->req=req;
-            thpool_add_work(thpool, (void*)work,args);
-            //work(args);
-            if ((arg=dequeue())!=NULL) {
-                   send_response(arg->req, arg->response_buffer, arg->response_body);
-                   free(arg);
-                   arg=NULL;
-            }
-
-
+            work(args);
+            //send_response(arg->req, arg->response_buffer, arg->response_body);
         }
-
-
     }
 }
 
 int main() {
-    kafka_init();
 
-    if (signal(SIGTERM, handle_signal) == SIG_ERR)
-   printf("\ncan't catch SIGINT\n");
+   kafka_init();
 
-   if (signal(SIGINT, handle_signal) == SIG_ERR)
-   printf("\ncan't catch SIGINT\n");
+   if (signal(SIGTERM, handle_signal) == SIG_ERR)
+printf("\ncan't catch SIGINT\n");
 
+// if (signal(SIGINT, handle_signal) == SIG_ERR)
+// printf("\ncan't catch SIGINT\n");
 
    socklen_t addrlen,clientaddresslen;
    int bufsize = 1024;
@@ -385,7 +358,7 @@ int main() {
    int optval = 1;
    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR|SO_LINGER, &optval, sizeof(optval));
 
-   epfd=epoll_create(1000000-1);
+   epfd=epoll_create(100000);
    struct epoll_event *events;
    events = malloc (sizeof (struct epoll_event)*2);
    int ret,i;
@@ -396,17 +369,18 @@ int main() {
    evnt.events = EPOLLIN | EPOLLET;
    epoll_ctl(epfd, EPOLL_CTL_ADD, _eventfd, &evnt);
 
-   thpool = thpool_init(8);
+   thpool = thpool_init(1);
    pthread_t threads[4];
    for (i = 0; i < 4; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
    }
+
    while (1) {
       if (listen(server_socket, 10000) < 0) {
          perror("server: listen");
          //exit(1);
       }
-clientaddresslen=sizeof(clientaddress);
+      clientaddresslen=sizeof(clientaddress);
       if ((new_socket = accept4(server_socket, (struct sockaddr *) &clientaddress, &clientaddresslen,SOCK_NONBLOCK)) < 0) {
          perror("server: accept");
          //exit(1);
@@ -424,3 +398,4 @@ clientaddresslen=sizeof(clientaddress);
    close(server_socket);
    return 0;
 }
+

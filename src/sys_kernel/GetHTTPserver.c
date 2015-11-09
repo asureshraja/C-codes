@@ -30,6 +30,7 @@ g++ -std=c++11 -c -fPIC -Wall queueapi.cpp  -o queueapi.o
 g++ -shared -o libq.so queueapi.o
 gcc -L./ -Wall HttpServer.c http_parser.c thpool.c -o server -lq -w -lpthread -g
 */
+
 char* concatenate( char* dest, char* src );
 int str_len(const char *str);
 int server_socket;int _eventfd;

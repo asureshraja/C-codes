@@ -23,16 +23,18 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <sched.h>
+#include <string.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <librdkafka/rdkafka.h>
-/*
 /*
 Experimental c server code
 g++ -std=c++11 -c -fPIC -Wall queueapi.cpp  -o queueapi.o
 g++ -shared -o libq.so queueapi.o
 gcc -L./ -Wall HttpServer.c http_parser.c thpool.c -o server -lq -w -lpthread -g
 */
+
 char* concatenate( char* dest, char* src );
 int str_len(const char *str);
 int server_socket;int _eventfd;
@@ -41,7 +43,6 @@ extern struct worker_args * dequeue2();
 extern  void enqueue2(struct worker_args *data);
 extern struct worker_args * dequeue();
 extern  void enqueue(struct worker_args *data);
-threadpool thpool;
 void handle_signal(int signal);
 int kafka_produce(char *buf);
 threadpool thpool;
@@ -59,16 +60,16 @@ rd_kafka_t *rk;
 void handle_signal(int signal) {
     if(signal==SIGTERM || signal==SIGINT){
         printf("%s\n","please wait.." );
-        close(server_socket);
 		while (rd_kafka_outq_len(rk) > 0){
             printf("%s %d","remaining ",rd_kafka_outq_len(rk));
             rd_kafka_poll(rk, 0);
         }
+        //close(server_socket);
     }
 }
 
 int kafka_produce(char *kafka_buffer){
-    while (rd_kafka_produce(rkt, RD_KAFKA_PARTITION_UA,
+    if (rd_kafka_produce(rkt, RD_KAFKA_PARTITION_UA,
 					     RD_KAFKA_MSG_F_COPY,
 					     /* Payload and length */
 					     kafka_buffer, str_len(kafka_buffer),
@@ -78,7 +79,7 @@ int kafka_produce(char *kafka_buffer){
 					      * delivery report callback as
 					      * msg_opaque. */
 					     NULL) == -1) {
-		//		printf("%s\n","error" );
+				printf("%s\n","error" );
                 //return -1;
 
 	}
@@ -88,10 +89,14 @@ int kafka_produce(char *kafka_buffer){
 void kafka_init(){
     conf = rd_kafka_conf_new();
     topic_conf = rd_kafka_topic_conf_new();
+    rd_kafka_conf_set(conf, "queue.buffering.max.ms", "1",
+              NULL, 0);
+    rd_kafka_conf_set(conf, "queue.buffering.max.messages", "5000000",
+                        NULL, 0);
+    rd_kafka_conf_set(conf, "queued.min.messages", "1000000", NULL, 0);
 
     if (signal(SIGTERM, handle_signal) == SIG_ERR)
     printf("\ncan't catch SIGINT\n");
-
 
     if (!(rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf,
 					errstr, sizeof(errstr)))) {
@@ -111,10 +116,8 @@ void kafka_init(){
     rkt = rd_kafka_topic_new(rk, topic, topic_conf);
 
 
-    rd_kafka_conf_set(conf, "queue.buffering.max.messages", "50000000",
-			  NULL, 0);
-	rd_kafka_conf_set(conf, "message.send.max.retries", "3", NULL, 0);
-	rd_kafka_conf_set(conf, "retry.backoff.ms", "50", NULL, 0);
+
+
 
 }
 char* concatenate( char* dest, char* src )
@@ -133,7 +136,7 @@ struct http_request{
     int socket_id;
     int keepalive;
     int minor_version;
-    char body[512*512];
+    char* body;
     struct phr_header headers[100];
 };
 void concatenate_string(char *original, char *add)
@@ -206,20 +209,32 @@ void send_response(struct http_request *req,char *response,char *response_body){
 
 
     free(req);
+    free(req->body);
     free(response);
     free(response_body);
 }
+void *send_to_kafka(){
+    //stick_this_thread_to_core(1);
 
+        char *arg;
+        while ((arg=dequeue2())!=NULL) {
+                kafka_produce(arg);
+               free(arg);
+               arg=NULL;
+        }
+
+
+}
 void work(struct worker_args *args){
-        stick_this_thread_to_core(-1);
+
     char *response_buffer=malloc(sizeof(char)*2048*4);
     response_buffer[0]='\0';
     args->response_buffer=response_buffer;//remaining will be filled by send
     args->response_body="ok";
-    enqueue(args);
-    //eventfd_write(_eventfd, 1);
-    //printf("%s\n","written" );
-    //send_response(args->req, args->response_buffer, args->response_body);
+
+    kafka_produce("simply");
+
+    send_response(args->req, args->response_buffer, args->response_body);
 }
 int stick_this_thread_to_core(int core_id) {
    int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
@@ -235,12 +250,12 @@ int stick_this_thread_to_core(int core_id) {
 
 void network_thread_function(){
     static int core_id=-1;
-    //core_id=core_id+1;
-    stick_this_thread_to_core(core_id);
+    core_id=core_id+1;
+    stick_this_thread_to_core(core_id%4);
     int number_of_ready_events;
     struct epoll_event *events;
-    int max_events_to_stop_waiting=1;
-    int epoll_time_wait=0;
+    int max_events_to_stop_waiting=10;
+    int epoll_time_wait=10;
     events = malloc (sizeof (struct epoll_event)*max_events_to_stop_waiting); //epoll event allocation for multiplexing
     int i=0,j=0; //iterators
     //char *response_buffer;
@@ -257,34 +272,11 @@ void network_thread_function(){
     struct worker_args *arg=NULL;
     while(1){
         number_of_ready_events = epoll_wait (epfd, events, max_events_to_stop_waiting, epoll_time_wait);
-        if (number_of_ready_events==0) {
-            if ((arg=dequeue())!=NULL) {
-                   send_response(arg->req, arg->response_buffer, arg->response_body);
-                   free(arg);
-                   arg=NULL;
-            }
-            continue;
-        }
+
         for (i = 0; i < number_of_ready_events; i++) {
-            //printf("%s\n","network thread" );
-            //printf("i val %d\n", i);
-            //printf("%d\n", events[i].data.fd);
 
-            if (events[i].data.fd==_eventfd) {
-            //    printf("%s\n","io loop" );
-                eventfd_t val;
-                eventfd_read(_eventfd, &val);
-                while ((arg=dequeue())!=NULL) {
-                       send_response(arg->req, arg->response_buffer, arg->response_body);
-                       free(arg);
-                       arg=NULL;
-                }
-                continue;
-            }
-
-            //read_buffer=malloc(sizeof(char)*512*512);
-            //memset(read_buffer, '\0', 512*512);
             req=malloc(sizeof(struct http_request));
+            req->body=malloc(sizeof(char)*512*512);
             req->socket_id=events[i].data.fd;
             read_buffer[0]='\0';
             received_bytes=recv(events[i].data.fd, read_buffer ,512*512,MSG_DONTWAIT);
@@ -337,13 +329,9 @@ void network_thread_function(){
 
             struct worker_args *args=malloc(sizeof(struct worker_args));
             args->req=req;
-            thpool_add_work(thpool, (void*)work,args);
-            //work(args);
-            if ((arg=dequeue())!=NULL) {
-                   send_response(arg->req, arg->response_buffer, arg->response_body);
-                   free(arg);
-                   arg=NULL;
-            }
+            work(args);
+            //send_response(arg->req, arg->response_buffer, arg->response_body);
+
 
 
         }
@@ -353,14 +341,14 @@ void network_thread_function(){
 }
 
 int main() {
-    kafka_init();
 
-    if (signal(SIGTERM, handle_signal) == SIG_ERR)
-   printf("\ncan't catch SIGINT\n");
+   kafka_init();
 
-   if (signal(SIGINT, handle_signal) == SIG_ERR)
-   printf("\ncan't catch SIGINT\n");
+   if (signal(SIGTERM, handle_signal) == SIG_ERR)
+printf("\ncan't catch SIGINT\n");
 
+// if (signal(SIGINT, handle_signal) == SIG_ERR)
+// printf("\ncan't catch SIGINT\n");
 
    socklen_t addrlen,clientaddresslen;
    int bufsize = 1024;
@@ -385,7 +373,7 @@ int main() {
    int optval = 1;
    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR|SO_LINGER, &optval, sizeof(optval));
 
-   epfd=epoll_create(1000000-1);
+   epfd=epoll_create(1000-1);
    struct epoll_event *events;
    events = malloc (sizeof (struct epoll_event)*2);
    int ret,i;
@@ -396,17 +384,18 @@ int main() {
    evnt.events = EPOLLIN | EPOLLET;
    epoll_ctl(epfd, EPOLL_CTL_ADD, _eventfd, &evnt);
 
-   thpool = thpool_init(8);
-   pthread_t threads[4];
+   thpool = thpool_init(1);
+   pthread_t threads[4];pthread_t kft[1];
    for (i = 0; i < 4; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
    }
+   pthread_create( &kft[0], NULL, &send_to_kafka, NULL);
    while (1) {
       if (listen(server_socket, 10000) < 0) {
          perror("server: listen");
          //exit(1);
       }
-clientaddresslen=sizeof(clientaddress);
+      clientaddresslen=sizeof(clientaddress);
       if ((new_socket = accept4(server_socket, (struct sockaddr *) &clientaddress, &clientaddresslen,SOCK_NONBLOCK)) < 0) {
          perror("server: accept");
          //exit(1);
