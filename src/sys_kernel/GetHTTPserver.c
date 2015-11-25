@@ -26,9 +26,12 @@
 
 /*
 Experimental c server code
-g++ -std=c++11 -c -fPIC -Wall queueapi.cpp  -o queueapi.o
-g++ -shared -o libq.so queueapi.o
-gcc -L./ -Wall HttpServer.c http_parser.c thpool.c -o server -lq -w -lpthread -g
+
+To Compile And Build 
+gcc GetHTTPserver.c -o server http_parser.c -w -lpthread
+
+To Run 
+./server
 */
 
 char* concatenate( char* dest, char* src );
@@ -135,7 +138,7 @@ void send_response(struct http_request *req,char *response,char *response_body){
 }
 
 void work(struct worker_args *args){
-        stick_this_thread_to_core(-1);
+    // stick_this_thread_to_core(-1);
     char *response_buffer=malloc(sizeof(char)*2048*4);
     response_buffer[0]='\0';
     args->response_buffer=response_buffer;//remaining will be filled by send
@@ -160,7 +163,7 @@ int stick_this_thread_to_core(int core_id) {
 
 void network_thread_function(){
     static int core_id=-1;
-    //core_id=core_id+1;
+    core_id=core_id+1;
     stick_this_thread_to_core(core_id);
     int number_of_ready_events;
     struct epoll_event *events;
@@ -294,6 +297,7 @@ int main() {
    epoll_ctl(epfd, EPOLL_CTL_ADD, _eventfd, &evnt);
 
    //thpool = thpool_init(2);
+   // Set number of threads to number of processors nproc -> out 
    pthread_t threads[2];
    for (i = 0; i < 2; i++) {
      pthread_create( &threads[i], NULL, &network_thread_function, NULL);
