@@ -26,6 +26,14 @@
 
 /*
 Experimental c server code
+For Machines with Low Ram 
+Install Hoard 
+
+git clone --recursive https://github.com/emeryberger/Hoard.git
+cd src
+make linux-gcc-x86-64
+export LD_PRELOAD=/path/to/libhoard.so
+
 
 To Compile And Build 
 gcc GetHTTPserver.c -o server http_parser.c -w -lpthread
